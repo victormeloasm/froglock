@@ -1,7 +1,3 @@
-Absolutely — here’s a **fully fleshed-out README** with a detailed, plain-English user manual for Ghost v5.3. It’s written so a newcomer can install, use, and troubleshoot without asking you anything.
-
----
-
 # 🐸 FROGLock — Ghost-Level Hybrid Encryption (v5.3)
 
 **AES-256-GCM + Argon2id + ECCFrog522PP (KEM) — single-file, Windows-focused**
@@ -298,6 +294,3 @@ FROGLock avoids logs and registry writes; Paranoid Mode reduces shell traces by 
 **MIT License** — see [LICENSE](LICENSE).
 This software is provided **“as is”** without warranty. Use responsibly. The authors are **not liable** for data loss, misuse, or outcome of cryptographic decisions.
 
----
-
-If you want, I can also generate a **separate `USER_GUIDE.md`** (same content, printer-friendly) or a **cheatsheet** you can ship alongside the EXE.
