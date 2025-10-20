@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# FROGLock Argon 2025AK — Ghost (v5.1, single-file, Windows-focused)
+# FROGLock Argon 2025AK — Ghost (v5.3, single-file, Windows-focused)
 # - Hybrid MANDATORY: AES-256-GCM (file) + Argon2id(pass) + ECCFrog522PP(KEM).
 # - Cada recipient recebe um HYBRID WRAP (precisa de pass+KEM) — sem pass-only / KEM-only.
 # - UI (Tk): File & Password, Key Management, Actions/Status. Design dark, responsivo, com tooltips.
@@ -10,6 +10,12 @@
 # - DEK: 32B fortes com whitening; mlock best-effort; zeroize.
 # - Clipboard wipe no Encrypt; sem bytecode; leve anti-debug; limite de tentativas por arquivo.
 # - NumPy opcional para XOR de buffers (micro ganho, seguro).
+#
+# v5.3 changes (GHOST-keep):
+#   • SecureEntry (senha em bytearray, limpa após leitura)
+#   • KEM paralelo p/ múltiplos recipients (limite dinâmico)
+#   • Chunk adaptativo (até 4 MiB conforme RAM e tamanho do arquivo)
+#   • mmap opcional p/ arquivos ≥ 1 GiB (ativado via env FROG_MMAP=1)
 
 import os, sys
 os.environ["PYTHONDONTWRITEBYTECODE"]="1"; sys.dont_write_bytecode=True
@@ -20,14 +26,20 @@ from typing import Dict, List, Optional, Tuple
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 
 APP_NAME = "FROGLock Argon 2025AK — Ghost"
-VERSION  = 5 + 0.1  # 5.1
+VERSION  = 5 + 0.3  # 5.3
 APP_VERSION_MIN = 5
 NONCE_SZ = 12
 TAG_SZ   = 16
 SALT_SZ  = 32
 
+# mmap (opcional, desativado por padrão)
+MMAP_ENABLED      = os.environ.get("FROG_MMAP", "0") == "1"
+MMAP_MIN_BYTES    = int(os.environ.get("FROG_MMAP_MIN_MB", "1024")) * (1024*1024)  # 1 GiB padrão
+
+# -------------------- runtime dir --------------------
 def _runtime_dir()->str:
     if getattr(sys, "frozen", False):
         return os.path.dirname(sys.executable)
@@ -123,15 +135,15 @@ if _HAS_GMP:
     _p_g=_gmp.mpz(_p); _a_g=_gmp.mpz(_a); _b_g=_gmp.mpz(_b)
 
 def _to_int(x): return int(x) if _HAS_GMP else x
-def _powm(a,e,m):
-    if _HAS_GMP: return _to_int(_gmp.powmod(_gmp.mpz(a), _gmp.mpz(e), _gmp.mpz(m)))
-    return pow(a,e,m)
+
 def _mod_inv(x:int)->int:
     if _HAS_GMP: return _to_int(_gmp.invert(_gmp.mpz(x), _p_g))
     return pow(x,_p-2,_p)
+
 def _legendre(a:int)->int:
     if _HAS_GMP: return int(_gmp.powmod(_gmp.mpz(a), (_p_g-1)//2, _p_g))
     return pow(a,(_p-1)//2,_p)
+
 def _is_on_curve(x:int,y:int)->bool:
     if x<0 or x>=_p or y<0 or y>=_p: return False
     return (y*y - (x*x*x + (_a*x)%_p + _b)) % _p == 0
@@ -174,10 +186,16 @@ def _to_jac(x:int,y:int): return (x%_p,y%_p,1)
 _GJ=_to_jac(_Gx,_Gy)
 
 _COMP_LEN=1+66
-def _int_to_be(x:int,l:int)->bytes: return x.to_bytes(l,'big')
-def _be_to_int(b:bytes)->int: return int.from_bytes(b,'big')
-def frog_compress(x:int,y:int)->bytes: return (b'\x03' if (y&1) else b'\x02')+_int_to_be(x,66)
 
+def _int_to_be(x:int,l:int)->bytes: return x.to_bytes(l,'big')
+
+def _be_to_int(b:bytes)->int: return int.from_bytes(b,'big')
+
+def frog_compress(x:int,y:int)->bytes:
+    # Use \x02 (even y) and \x03 (odd y) to avoid invisible control chars.
+    return (b'\x03' if (y & 1) else b'\x02') + _int_to_be(x,66)
+
+# sqrt modulo p (com gmp opcional)
 def _tonelli(n:int)->Optional[int]:
     if n==0: return 0
     if _HAS_GMP:
@@ -272,16 +290,18 @@ def frog_ecdh(sk:bytes, peer_pub:bytes)->bytes:
 def frog_kem_encap(recipient_pub:bytes)->Tuple[bytes,bytes]:
     eph_sk=frog_privkey_generate(); eph_pub=frog_pub_from_priv(eph_sk)
     kek=frog_ecdh(eph_sk,recipient_pub); return eph_pub,kek
+
 def frog_kem_decap(sk:bytes, eph_pub:bytes)->bytes: return frog_ecdh(sk,eph_pub)
 
 # -------------------- helpers --------------------
 def _np_xor(a:bytes,b:bytes)->bytes:
-    if not _HAS_NP:  # fallback puro-python
+    if not _HAS_NP:
         return bytes(x^y for x,y in zip(a,b))
     A=_np.frombuffer(a,dtype=_np.uint8); B=_np.frombuffer(b,dtype=_np.uint8)
     return (_np.bitwise_xor(A,B)).tobytes()
 
 def sanitize_filepath(p:str)->str: return os.path.normpath(p)
+
 def validate_file_path(p:str)->bool:
     try:
         if not p or len(p)>4096: return False
@@ -290,8 +310,31 @@ def validate_file_path(p:str)->bool:
         return True
     except: return False
 
+# mem disponível (MiB)
+def _mem_available_mib()->int:
+    try:
+        class MEMORYSTATUSEX(ctypes.Structure):
+            _fields_=[
+                ("dwLength", wt.DWORD),
+                ("dwMemoryLoad", wt.DWORD),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+        s=MEMORYSTATUSEX(); s.dwLength=ctypes.sizeof(MEMORYSTATUSEX)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(s)):
+            return int(s.ullAvailPhys // (1024*1024))
+    except: pass
+    return 2048  # fallback conservador
+
+# -------------------- tmp/atomic --------------------
 def create_tmp(dst:str)->str:
     tmp=dst+".tmp"; open(tmp,"wb").close(); set_owner_only_acl(tmp); return tmp
+
 def atomic_replace(src_tmp:str,dst_final:str)->None:
     set_owner_only_acl(src_tmp); os.replace(src_tmp,dst_final); set_owner_only_acl(dst_final)
 
@@ -315,6 +358,7 @@ class SecureOp:
                 if self.tmp and os.path.exists(self.tmp): os.unlink(self.tmp)
             except: pass
 
+# -------------------- mlock helpers --------------------
 def lock_ba(ba:bytearray):
     if not VirtualLock or not ba: return (None,0)
     buf=(ctypes.c_char*len(ba)).from_buffer(ba)
@@ -322,12 +366,14 @@ def lock_ba(ba:bytearray):
         if VirtualLock(buf,len(ba)): return (buf,len(ba))
     except: pass
     return (None,0)
+
 def unlock_ba(h):
     if not VirtualUnlock: return
     buf,ln=h
     try:
         if buf and ln: VirtualUnlock(buf,ln)
     except: pass
+
 def zeroize_ba(ba:bytearray):
     try:
         if RtlSecureZeroMemory and ba:
@@ -336,6 +382,7 @@ def zeroize_ba(ba:bytearray):
     for i in range(len(ba)): ba[i]=0
     del ba[:]
 
+# -------------------- randomness --------------------
 def secure_rand32()->bytes:
     # DEK ultra: 32B secrets + 32B urandom; HKDF mix + BLAKE3 whitening
     r1=secrets.token_bytes(32)
@@ -379,11 +426,14 @@ def make_header_base(nonce:bytes,pad:int,chunk:int)->Dict:
     return {"magic":"AESC","ver":VERSION,"min_reader_version":APP_VERSION_MIN,
             "aead":{"alg":"AES-256-GCM","nonce":base64.b64encode(nonce).decode("ascii"),"chunk":chunk},
             "padding_size":pad,"entries":[]}
+
 def header_stub_bytes(h:Dict)->bytes:
     stub={k:h[k] for k in ("magic","ver","min_reader_version","aead","padding_size")}
     return json.dumps(stub,separators=(",",":"),sort_keys=True).encode("utf-8")
+
 def serialize_header(h:Dict)->bytes:
     return json.dumps(h,separators=(",",":"),sort_keys=True).encode("utf-8")
+
 def parse_header(raw:bytes)->Dict: return json.loads(raw.decode("utf-8"))
 
 # -------------------- HYBRID (2-de-2) --------------------
@@ -413,6 +463,16 @@ def hybrid_wrap_make(pk_b64:str, dek:bytes, stub:bytes, kek_pass:bytes)->Dict:
             "enc":base64.b64encode(eph_pub).decode("ascii"),
             "ct":base64.b64encode(blob).decode("ascii")}
 
+def hybrid_wrap_make_parallel(recipients:List[str], dek:bytes, stub:bytes, kek_pass_bytes:bytes)->List[Dict]:
+    if not recipients: return []
+    def _wrap_single(pk):
+        try: return hybrid_wrap_make(pk, dek, stub, kek_pass_bytes)
+        except: return None
+    max_workers=min(8, len(recipients))
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        results=list(ex.map(_wrap_single, recipients))
+    return [r for r in results if r is not None]
+
 def hybrid_wrap_try_open(entry:Dict, frog_sk:bytes, stub:bytes, kek_pass:bytes)->Optional[bytes]:
     if entry.get("type")!="hybrid-wrap-eccfrog522pp": return None
     eph=base64.b64decode(entry["enc"])
@@ -427,11 +487,18 @@ def hybrid_wrap_try_open(entry:Dict, frog_sk:bytes, stub:bytes, kek_pass:bytes)-
         return dek if len(dek)==32 else None
     except: return None
 
-# -------------------- chunk rules --------------------
+# -------------------- chunk rules (adaptativo) --------------------
 def get_chunk(sz:int)->int:
-    if sz<10*1024*1024: return 64*1024
-    elif sz<100*1024*1024: return 512*1024
-    else: return 1*1024*1024
+    MiB=1024*1024
+    avail=_mem_available_mib()
+    # base pelo tamanho
+    if sz < 10*MiB: base = 64*1024
+    elif sz < 100*MiB: base = 512*1024
+    else: base = 1*MiB
+    # upgrades conforme RAM/tamanho
+    if sz >= 100*MiB and avail >= 8192: base = max(base, 2*MiB)
+    if sz >= 500*MiB and avail >= 16384: base = max(base, 4*MiB)
+    return base
 
 # -------------------- anti-bruteforce por arquivo --------------------
 class AttemptTracker:
@@ -444,6 +511,33 @@ class AttemptTracker:
 attempt_tracker=AttemptTracker()
 
 # -------------------- encrypt/decrypt --------------------
+def _write_encrypted_stream(fin, fout, dek:bytes, pnonce:bytes, hbytes:bytes, fsz:int, CHUNK:int, pad:int, progress_cb=None):
+    enc=Cipher(algorithms.AES(dek),modes.GCM(pnonce)).encryptor(); enc.authenticate_additional_data(hbytes)
+    processed=0
+    while True:
+        chunk=fin.read(CHUNK)
+        if not chunk: break
+        fout.write(enc.update(chunk)); processed+=len(chunk)
+        if progress_cb and fsz>0: progress_cb(min(100.0,(processed/fsz)*100.0))
+    if pad: fout.write(enc.update(secrets.token_bytes(pad)))
+    fout.write(enc.finalize()); fout.write(enc.tag)
+
+def _write_encrypted_mmap(in_path:str, fout, dek:bytes, pnonce:bytes, hbytes:bytes, fsz:int, pad:int, progress_cb=None):
+    import mmap
+    CHUNK_SIZE = 16 * 1024 * 1024  # 16 MiB fixo para mmap
+    enc=Cipher(algorithms.AES(dek),modes.GCM(pnonce)).encryptor(); enc.authenticate_additional_data(hbytes)
+    processed=0
+    with open(in_path, "rb") as fin:
+        with mmap.mmap(fin.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+            off=0; ln=len(mm)
+            while off < ln:
+                end=min(off+CHUNK_SIZE, ln)
+                fout.write(enc.update(mm[off:end]))
+                processed += (end-off); off=end
+                if progress_cb and fsz>0: progress_cb(min(100.0,(processed/fsz)*100.0))
+    if pad: fout.write(enc.update(secrets.token_bytes(pad)))
+    fout.write(enc.finalize()); fout.write(enc.tag)
+
 def encrypt_stream(in_path:str,out_path:str,password_ba:bytearray,
                    recipients_frog:List[str],progress_cb=None):
     if not validate_file_path(in_path): raise ValueError("Invalid path.")
@@ -463,29 +557,20 @@ def encrypt_stream(in_path:str,out_path:str,password_ba:bytearray,
     kek_pass=pass_kek_from_params(password_ba, pass_params)
     zeroize_ba(password_ba); unlock_ba(hlock)
 
-    entries=[]
-    entries.append({"type":"pass-params","params":pass_params})
-    valid_ct=0
-    for pk in recipients_frog:
-        try:
-            entries.append(hybrid_wrap_make(pk,dek,stub,kek_pass)); valid_ct+=1
-        except: pass
-    if valid_ct==0:
-        raise ValueError("No valid FROG recipients. Check the public keys.")
+    entries=[{"type":"pass-params","params":pass_params}]
+    wraps = hybrid_wrap_make_parallel(recipients_frog, dek, stub, kek_pass)
+    if not wraps: raise ValueError("No valid FROG recipients. Check the public keys.")
+    entries.extend(wraps)
 
     header=dict(header_base); header["entries"]=entries; hbytes=serialize_header(header)
-    processed=0
 
-    with SecureOp(out_path) as fout, open(in_path,"rb") as fin:
+    with SecureOp(out_path) as fout:
         fout.write(len(hbytes).to_bytes(4,"big")); fout.write(hbytes)
-        enc=Cipher(algorithms.AES(dek),modes.GCM(pnonce)).encryptor(); enc.authenticate_additional_data(hbytes)
-        while True:
-            chunk=fin.read(CHUNK)
-            if not chunk: break
-            fout.write(enc.update(chunk)); processed+=len(chunk)
-            if progress_cb and fsz>0: progress_cb(min(100.0,(processed/fsz)*100.0))
-        if pad: fout.write(enc.update(secrets.token_bytes(pad)))
-        fout.write(enc.finalize()); fout.write(enc.tag)
+        if MMAP_ENABLED and fsz >= MMAP_MIN_BYTES:
+            _write_encrypted_mmap(in_path, fout, dek, pnonce, hbytes, fsz, pad, progress_cb)
+        else:
+            with open(in_path,"rb") as fin:
+                _write_encrypted_stream(fin, fout, dek, pnonce, hbytes, fsz, CHUNK, pad, progress_cb)
 
     try:
         ba=bytearray(dek); h=lock_ba(ba); zeroize_ba(ba); unlock_ba(h)
@@ -597,11 +682,11 @@ def _write_private_atomic(path:str,data:bytes):
     set_owner_only_acl(tmp); os.replace(tmp,path); set_owner_only_acl(path)
 
 def _write_text_atomic(path:str, text:str, newline=True):
-    tmp=path+".tmp"
-    with open(tmp,"w", encoding="utf-8", newline="\n") as f:
-        f.write(text.rstrip()+"\n" if newline else text)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+        f.write((text.rstrip() + "\n") if newline else text)
         f.flush(); os.fsync(f.fileno())
-    set_owner_only_acl(tmp); os.replace(tmp,path); set_owner_only_acl(path)
+    set_owner_only_acl(tmp); os.replace(tmp, path); set_owner_only_acl(path)
 
 def load_optional(path:str)->Optional[bytes]:
     try:
@@ -666,8 +751,10 @@ def generate_frog_keypair_ui():
             root.clipboard_clear(); root.clipboard_append(pk_b64); root.update()
         except: pass
 
-        add_now=messagebox.askyesno("FROG Keypair",
-            f"Keypair created in:\n{RUNTIME_DIR}\n\nPublic key (Base64, compressed) copied to clipboard.\nAdd to Recipients now?")
+        add_now=messagebox.askyesno(
+            "FROG Keypair",
+            f"Keypair created in:\n{RUNTIME_DIR}\n\nPublic key (Base64, compressed) copied to clipboard.\nAdd to Recipients now?"
+        )
         if add_now:
             if pk_b64 not in RECIPIENTS_FROG: RECIPIENTS_FROG.append(pk_b64)
             messagebox.showinfo("Recipients","Public key added for this session.")
@@ -711,7 +798,8 @@ def recipients_manager():
         if not b64:
             messagebox.showwarning("Public Key","frog522pp.pub not found. Generate or place one.")
             return
-        t.insert("end", ("\n" if t.get("1.0","end-1c") else "") + b64)
+        existing=t.get("1.0","end-1c")
+        t.insert("end", ("\n" if existing else "") + b64)
 
     def save():
         RECIPIENTS_FROG.clear()
@@ -721,7 +809,6 @@ def recipients_manager():
         for s in lines:
             try:
                 c=_b64_canon(s)
-                # valida curva antes de aceitar
                 if not frog_validate_public(base64.b64decode(c)):
                     bad+=1; continue
                 if c not in added:
@@ -760,6 +847,7 @@ def clear_all():
 
 # -------------------- Paranoid Mode --------------------
 BROWSE_ENABLED_IN_PARANOID = False
+
 def is_paranoid()->bool:
     try: return bool(PARANOID_STATE.get())
     except: return True
@@ -782,24 +870,46 @@ def _apply_mode_to_ui():
         if is_paranoid() else "Standard Mode: full features (Browse enabled)."
     )
 
+# -------------------- SecureEntry (senha em bytearray) --------------------
+class SecureEntry(ttk.Entry):
+    def secure_get(self) -> bytearray:
+        try:
+            s = super().get()
+            ba = bytearray(s.encode('utf-8'))
+        except Exception:
+            ba = bytearray()
+        try:
+            self.delete(0, tk.END)
+        except: pass
+        return ba
+    def secure_clear(self):
+        try:
+            self.delete(0, tk.END)
+        except: pass
+
 # -------------------- worker --------------------
 def perform_action_threaded(action):
-    pwd=password_entry.get().strip(); path=effective_input_path()
+    path=effective_input_path()
     if not path:
         messagebox.showwarning("Input","Provide a file path."); return
     if not validate_file_path(path):
         messagebox.showwarning("Path","Invalid path."); return
     if action=="encrypt" and not RECIPIENTS_FROG:
         messagebox.showwarning("Hybrid","Add at least one recipient public key (FROG)."); return
+
+    # exigir senha nos dois fluxos (hybrid é 2-de-2)
+    has_pwd = bool(password_entry.get())
+    if not has_pwd:
+        messagebox.showwarning("Hybrid","Password is required (hybrid mandatory)."); return
+
     if action=="decrypt":
         if not path.endswith(".aesc"):
             messagebox.showwarning("Format","Select a .aesc file."); return
         if not os.path.exists(FROG_SK_PATH):
             messagebox.showwarning("Hybrid","Missing FROG secret key (.sk). Import or generate one."); return
-        if not pwd:
-            messagebox.showwarning("Hybrid","Password is required (hybrid mandatory)."); return
 
     def progress_cb(p): root.after(0, lambda: set_progress(p))
+
     def worker():
         try:
             for b in (encrypt_btn,decrypt_btn,browse_btn,keyboard_btn,gen_btn,copy_btn,
@@ -807,7 +917,9 @@ def perform_action_threaded(action):
                 b.config(state='disabled')
             for e in (file_entry,manual_entry,password_entry): e.config(state='disabled')
             progress["value"]=0; set_progress(0.0)
-            pwd_ba=bytearray(pwd.encode("utf-8"))
+
+            # pega senha como bytearray e já limpa o campo
+            pwd_ba = password_entry.secure_get()
 
             if action=="encrypt":
                 secure_clear_clipboard()
@@ -832,8 +944,7 @@ def perform_action_threaded(action):
                 except Exception as e:
                     messagebox.showerror("Error", str(e))
         finally:
-            try: tmp=bytearray(pwd.encode("utf-8")); h=lock_ba(tmp); zeroize_ba(tmp); unlock_ba(h)
-            except: pass
+            # pwd_ba é zerado dentro dos fluxos após derivar KEK; aqui só reabilita UI
             for b in (encrypt_btn,decrypt_btn,browse_btn,keyboard_btn,gen_btn,copy_btn,
                       rec_btn,keypair_btn,upload_frog_btn,show_pub_btn,open_keys_btn,clear_btn):
                 b.config(state='normal')
@@ -881,6 +992,7 @@ class _ToolTip:
             if self._job: self.widget.after_cancel(self._job)
         except: pass
         self._job=None
+        
     def _show(self):
         if self.tip: return
         x=self.widget.winfo_rootx()+20
@@ -950,28 +1062,32 @@ ttk.Label(card1, text="Tip: Manual Path avoids shell MRU (fewer traces).", style
 add_tip(manual_entry, "Cole o caminho completo do arquivo para reduzir rastros de shell.")
 
 ttk.Label(card1, text="Password (hybrid):").grid(row=2, column=0, padx=(0,10), pady=6, sticky="e")
-password_entry = ttk.Entry(card1, show="*")
+password_entry = SecureEntry(card1, show="*")
 password_entry.grid(row=2, column=1, padx=(0,10), pady=6, sticky="ew")
-def _toggle_pw():
-    password_entry.config(show="" if password_entry.cget("show")=="*" else "*")
+
+def _toggle_pw(): password_entry.config(show="" if password_entry.cget("show")=="*" else "*")
 toggle_button = ttk.Button(card1, text="Show", command=_toggle_pw)
 toggle_button.grid(row=2, column=2, pady=6, sticky="w")
 add_tip(password_entry, "Será usado no Argon2id para derivar parte do KEK (2-de-2 com KEM).")
 add_tip(toggle_button, "Mostrar/Ocultar senha.")
 
+# tools row
 tools = ttk.Frame(card1, style="Card.TFrame")
 tools.grid(row=3, column=0, columnspan=3, pady=(4,2), sticky="ew")
 for c in range(5): tools.grid_columnconfigure(c, weight=1)
 
+# Teclado virtual (insere direto na Entry)
 def show_virtual_keyboard():
     kb=tk.Toplevel(root); kb.title("Virtual Keyboard")
     kb.geometry("700x330"); kb.resizable(False,False); kb.configure(bg=COL_BG)
-    rows=[('1','2','3','4','5','6','7','8','9','0','-','=','Backspace'),
-          ('q','w','e','r','t','y','u','i','o','p','[',']','\\'),
-          ('a','s','d','f','g','h','j','k','l',';',"'",'Enter'),
-          ('z','x','c','v','b','n','m',',','.','/','Shift'),
-          ('`','~','{','}',';',':','!','@','#','$','%','&','*','()'),
-          ('Space','Shift')]
+    rows=[
+        ["1","2","3","4","5","6","7","8","9","0","-","=","Backspace"],
+        ["q","w","e","r","t","y","u","i","o","p","[","]","\\"],
+        ["a","s","d","f","g","h","j","k","l",";","'","Enter"],
+        ["z","x","c","v","b","n","m",",",".","/","Shift"],
+        ["`","~","{","}",";",":","!","@","#","$","%","&","*","()"],
+        ["Space","Shift"]
+    ]
     shift={"on":False}
     def press(k):
         cur=password_entry.get()
@@ -993,19 +1109,24 @@ def show_virtual_keyboard():
                             command=lambda K=key: press(K))
                 b.grid(row=r,column=c,padx=4,pady=4)
     draw()
+
 keyboard_btn = ttk.Button(tools, text="Virtual Keyboard", command=show_virtual_keyboard); keyboard_btn.grid(row=0, column=1, padx=6)
 add_tip(keyboard_btn, "Teclado virtual simples para inserir senha.")
 
+# Gerar senha
 def _gen_pwd():
     import string
     password_entry.delete(0, tk.END)
     password_entry.insert(0, ''.join(secrets.choice(string.ascii_letters+string.digits+string.punctuation) for _ in range(45)))
+
 gen_btn = ttk.Button(tools, text="Generate Password", command=_gen_pwd); gen_btn.grid(row=0, column=2, padx=6)
 add_tip(gen_btn, "Gera uma senha forte (45 chars).")
 
+# Copiar senha
 def _copy_pwd():
     root.clipboard_clear(); root.clipboard_append(password_entry.get()); root.update()
     messagebox.showinfo("Clipboard","Password copied. It will be cleared on Encrypt.")
+
 copy_btn = ttk.Button(tools, text="Copy Password", command=_copy_pwd); copy_btn.grid(row=0, column=3, padx=6)
 add_tip(copy_btn, "Copia a senha para a área de transferência (limpa automaticamente no Encrypt).")
 
@@ -1022,11 +1143,11 @@ add_tip(_keep_cb, "Se desmarcado, tenta apagar o original após criptografar (me
 card2 = ttk.Frame(container, style="Card.TFrame", padding=16)
 card2.grid(row=2, column=0, sticky="ew", pady=(0,10))
 for c in range(6): card2.grid_columnconfigure(c, weight=1)
-rec_btn         = ttk.Button(card2, text="Recipients…", command=recipients_manager);        rec_btn.grid(row=0, column=0, sticky="w")
-keypair_btn     = ttk.Button(card2, text="Generate FROG Keypair", command=generate_frog_keypair_ui); keypair_btn.grid(row=0, column=2, sticky="e", padx=(0,8))
-upload_frog_btn = ttk.Button(card2, text="Upload FROG .sk…", command=upload_frog_sk_ui);   upload_frog_btn.grid(row=0, column=3, sticky="e", padx=(0,8))
-show_pub_btn    = ttk.Button(card2, text="Copy Public Key", command=show_pubkey_ui);        show_pub_btn.grid(row=0, column=4, sticky="e", padx=(0,8))
-open_keys_btn   = ttk.Button(card2, text="Open Keys Folder", command=open_keys_folder);     open_keys_btn.grid(row=0, column=5, sticky="e")
+rec_btn         = ttk.Button(card2, text="Recipients…", command=lambda: recipients_manager());        rec_btn.grid(row=0, column=0, sticky="w")
+keypair_btn     = ttk.Button(card2, text="Generate FROG Keypair", command=generate_frog_keypair_ui);  keypair_btn.grid(row=0, column=2, sticky="e", padx=(0,8))
+upload_frog_btn = ttk.Button(card2, text="Upload FROG .sk…", command=upload_frog_sk_ui);             upload_frog_btn.grid(row=0, column=3, sticky="e", padx=(0,8))
+show_pub_btn    = ttk.Button(card2, text="Copy Public Key", command=show_pubkey_ui);                  show_pub_btn.grid(row=0, column=4, sticky="e", padx=(0,8))
+open_keys_btn   = ttk.Button(card2, text="Open Keys Folder", command=open_keys_folder);               open_keys_btn.grid(row=0, column=5, sticky="e")
 
 add_tip(rec_btn, "Gerencie a lista de destinatários (cole chaves públicas FROG em Base64).")
 add_tip(keypair_btn, "Gera um par de chaves FROG e salva no diretório do app.")
