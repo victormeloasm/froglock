@@ -1,63 +1,74 @@
-# 🐸 FROGLock — Ghost-Level Hybrid Encryption (v5.3)
+# 🐸 FROGLock — Ghost-Level Hybrid Encryption (v5.4)
 
 **AES-256-GCM + Argon2id + ECCFrog522PP (KEM) — single-file, Windows-focused**
 
+![Logo](logo.png)
+
 ![Screenshot](screen.png)
 
-[![Release](https://img.shields.io/badge/Release-5.3-green)](https://github.com/victormeloasm/froglock/releases/tag/5.3)
+[![Release](https://img.shields.io/badge/Release-5.4-green)](https://github.com/victormeloasm/froglock/releases/tag/5.4)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%2B-blue)](#)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Ops](https://img.shields.io/badge/Ghost-Logs%20Off%20%7C%20No%20Telemetry-black)](#)
-[![Security](https://img.shields.io/badge/Security-Military--Grade-red)](#)
+[![Security](https://img.shields.io/badge/Security-Hardened-red)](#)
 
 ---
 
 ## 📥 Download (Windows)
 
-**Ghost Build (portable):**
-`FROGLock-GHOST_v5_3.zip` → unzip → run `FROGLock_GHOST_v5_3.exe`
-Direct link: **[https://github.com/victormeloasm/froglock/releases/download/5.2/FROGLock-GHOST_v5_3.zip](https://github.com/victormeloasm/froglock/releases/download/5.2/FROGLock-GHOST_v5_3.zip)**
+**Ghost build (portable)**  
+Go to the v5.4 release page and download the latest portable ZIP:
+
+➡ **https://github.com/victormeloasm/froglock/releases/tag/5.4**
+
+Unzip and run the included **FrogLock.exe** (or similarly named EXE).
 
 * No installer, no admin required.
 * Runs in *ghost mode*: no logs, no registry writes by design.
-* All cryptographic state lives in memory and is wiped best-effort.
+* All cryptographic state lives in memory and is wiped on a best-effort basis.
 
-> ⚠️ If SmartScreen or AV warns (common for new portable tools): click **More info → Run anyway** after verifying the file came from the official repo.
+> ⚠️ If SmartScreen or AV warns (common for fresh unsigned tools):  
+> verify the file came from this repo, then click **More info → Run anyway**.
 
 ---
 
 ## 📚 What FROGLock Does (in one paragraph)
 
-* It encrypts files using **AES-256-GCM** with a random 256-bit **DEK**.
-* That DEK is sealed using **hybrid 2-of-2**:
-  **(1) your password via Argon2id KDF** and **(2) ECCFrog522PP KEM** to the recipient’s public key(s).
-* To decrypt, both are required: **correct password + matching FROG private key**. No pass-only or KEM-only mode.
+FROGLock encrypts files using **AES-256-GCM** with a random 256-bit **Data Encryption Key (DEK)**.  
+That DEK is then sealed using a **mandatory hybrid 2-of-2 scheme**:
+
+1. Your **password**, stretched with **Argon2id** (time-tuned per machine)  
+2. One or more **ECCFrog522PP** public keys, via KEM (key encapsulation)
+
+To decrypt, both are required: the **correct password** *and* a matching **FROG private key**.  
+There is **no password-only** or **KEM-only** mode.
 
 ---
 
-## 🧠 Quick Start (10 steps, first time)
+## 🧠 Quick Start (first-time use)
 
-1. **Launch** the app (`FROGLock_GHOST_v5_3.exe`).
-2. At the top-right, leave **Paranoid Mode** ON (recommended).
-3. Click **Generate FROG Keypair**.
-
+1. **Launch** the app (the portable EXE from the 5.4 release).
+2. At the top-right, leave **Paranoid Mode** enabled (recommended).
+3. Click **Generate FROG Keypair**:
    * Creates `frog522pp.sk` (private) and `frog522pp.pub` (public, Base64) in the app folder.
-   * Your public key is copied to clipboard automatically.
-4. **Share your public key** (the Base64 string from clipboard) with people who should send you encrypted files.
+   * Your public key is copied to the clipboard automatically.
+4. **Share your public key** (`frog522pp.pub` / clipboard Base64 string) with people who should send you encrypted files.
 5. To add recipients you want to encrypt **for**:
-
-   * Click **Recipients…**, paste their Base64 public keys (one per line), click **Save**.
+   * Click **Recipients…**, paste their FROG public keys (Base64, one per line), click **Save**.
 6. **Choose a file**:
-
    * In Paranoid Mode, paste the full path in **Manual Path**.
-   * Or temporarily toggle Paranoid off and use **Browse**.
-7. **Enter a strong password** (or **Generate Password**).
+   * Or temporarily disable Paranoid Mode and use **Browse**.
+7. **Enter a strong password** (or click **Generate Password** to create one).
 8. Click **Encrypt**.
-
-   * Output name is random in Paranoid Mode (example: `file_ab12cd34.aesc`), or `<file>.aesc` in Standard Mode.
-   * Clipboard is sanitized automatically.
-9. **Send the `.aesc` file** to recipients — they’ll need their FROG private key plus the correct password.
-10. When closing the app, your local `frog522pp.sk` in the app folder is **secure-wiped**.
+   * In Paranoid Mode, the output name is **randomized**  
+     (e.g. `file_5f3c9b12.aesc` in the same folder).
+   * In Standard Mode, the default output pattern is `<file>.aesc`.
+   * The clipboard is cleared on encrypt (best-effort).
+9. Send the resulting `.aesc` file to your recipient — they’ll need:
+   * Their **FROG private key**, and  
+   * The **correct password**.
+10. On exit, the `frog522pp.sk` file in the app folder is **secure-wiped** (best-effort).  
+    Keep an external backup of your private key somewhere safe.
 
 ---
 
@@ -65,232 +76,355 @@ Direct link: **[https://github.com/victormeloasm/froglock/releases/download/5.2/
 
 ### Header
 
-* **Title + Version + Mode:** shows **Paranoid** (recommended) or **Standard**.
-* **Paranoid Mode (checkbox or F9)**
-
-  * Disables **Browse** dialog (less shell traces).
-  * Encourages **Manual Path**.
-  * Uses **randomized output names**.
-  * Suggests/deletes originals (if you uncheck “Keep original”).
-
-### Card 1 — File & Password
-
-* **File (dialog):** Normal file picker (disabled in Paranoid).
-* **Manual Path:** Paste a full path like `C:\Users\me\Desktop\photo.jpg`.
-* **Password (hybrid):** The passphrase used by Argon2id to derive your KEK.
-
-  * **Show** toggles masking.
-  * **Generate Password** creates a 45-char strong pass.
-  * **Copy Password** puts it in the clipboard (clipboard is auto-cleared on encrypt).
-* **Keep original after encrypt:** If unchecked, the app **tries** to delete the plaintext after a successful encrypt.
-
-### Card 2 — Key Management (FROG)
-
-* **Recipients…**: Paste **other people’s** FROG public keys (Base64, one per line).
-* **Generate FROG Keypair**: Saves your new `frog522pp.sk` and `frog522pp.pub`.
-* **Upload FROG .sk…**: Import your existing private key for decrypting.
-* **Copy Public Key**: Copies your `frog522pp.pub` (Base64 canonical) to share.
-* **Open Keys Folder**: Opens the app directory (where keys live).
-* On exit, `frog522pp.sk` in the app folder is **securely wiped**. Keep your **backup** elsewhere!
-
-### Card 3 — Actions & Status
-
-* **Encrypt / Decrypt** buttons
-* **Clear All**: resets inputs and recipient list for this session.
-* **Progress bar** & percent indicator.
+* **Title + Version + Mode**
+  * Shows current version and whether you’re in **Standard** or **Paranoid Mode**.
+* **Paranoid Mode** (checkbox or **F9**)
+  * Disables the file dialog **Browse** button (fewer shell/MRU traces).
+  * Encourages **Manual Path** usage.
+  * Uses **randomized output names** for encrypted files.
+  * Makes it easier to remove plaintext originals after successful encryption.
 
 ---
 
-## 🔐 Encryption Flow (step-by-step)
+### Card 1 — File & Password
 
-1. **Inputs required**:
+* **File (dialog)**  
+  Standard file picker (disabled in Paranoid Mode).
+* **Manual Path**  
+  Enter a full path like:  
+  `C:\Users\you\Desktop\secret.pdf`
+* **Password (hybrid)**  
+  The passphrase fed to Argon2id to derive a KEK.
+  * **Show** toggles masking on/off.
+  * **Generate Password** creates a long, high-entropy password.
+  * **Copy Password** copies it to the clipboard (which is cleared on encrypt).
+* **Keep original after encrypt**  
+  * If unchecked, the app will **try** to delete the plaintext file after a successful encryption
+    (best-effort — the OS and filesystem still have the last word).
 
-   * File path (Manual Path in Paranoid mode recommended)
-   * Password (non-empty)
-   * ≥1 valid recipient public key (Base64 ECCFrog522PP)
+---
 
-2. **Internals**:
+### Card 2 — Key Management (FROG)
 
-   * Generate random **DEK (32 bytes)** for AES-GCM.
-   * **Argon2id (autotuned)** derives a pass-KEK from your password.
-   * For each recipient pubkey, **ECCFrog522PP KEM** produces a kem-KEK.
-   * The **final wrap KEK = blake3(pass-KEK || kem-KEK || header-stub)**.
-   * The DEK is sealed and stored in **hybrid-wrap entries** inside the header.
-   * The file is chunk-encrypted with **AES-256-GCM**, random padding is appended, and the **tag** is written.
+* **Recipients…**  
+  Manage the set of FROG public keys you encrypt to:
+  * Paste Base64 ECCFrog522PP keys (compressed) — one per line.
+  * At least one valid recipient is **required** to encrypt.
+* **Generate FROG Keypair**  
+  * Generates a fresh FROG keypair:
+    * `frog522pp.sk` (binary private key, 66 bytes)
+    * `frog522pp.pub` (Base64, 1-line public key)
+  * Public key is automatically copied to clipboard for sharing.
+* **Upload FROG .sk…**  
+  * Import an existing private key (for decrypt).
+* **Copy Public Key**  
+  * Copies your public key (`frog522pp.pub`, Base64 canonical) to the clipboard.
+* **Open Keys Folder**  
+  * Opens the app directory (where keys live and where `.sk` is secure-wiped on exit).
 
-3. **Outputs**:
+> 🔑 **Important:** `frog522pp.sk` is wiped from the app folder on exit.  
+> Keep a **separate secure backup** if you care about long-term access to encrypted data.
 
-   * One `.aesc` file with:
+---
 
-     * A compact JSON header (algorithm info + hybrid entries),
-     * AES-GCM ciphertext + tag.
+### Card 3 — Actions & Status
 
-> **Note:** Clipboard is overwritten, DEK is zeroized, sensitive buffers are locked/cleared best-effort via Windows APIs when available.
+* **Encrypt** / **Decrypt**  
+  * Main operations for `.aesc` files.
+* **Clear All**  
+  * Resets entries and clears transient UI state.
+* **Status text + Progress bar**  
+  * Shows what’s happening and percentage done (per file).
+
+---
+
+## 🔐 Encryption Flow (under the hood)
+
+1. **Inputs required**
+   * Valid file path.
+   * Non-empty **password**.
+   * At least **one valid FROG recipient public key** (Base64).
+
+2. **Process**
+   1. Generate a random **DEK (32 bytes)**.
+   2. Use **Argon2id** (time-autotuned) to derive a **password KEK** using:
+      * salt, time (`t`), memory (`m`), and parallelism (`p`) stored in the header.
+   3. For each recipient public key:
+      * Run **ECCFrog522PP KEM** → recipient-specific **kem-KEK**.
+   4. For each recipient:
+      * Compute final KEK:  
+        `KEK_final = BLAKE2b(pass_KEK || kem_KEK || header_stub)`
+      * Encrypt the DEK with AES-GCM using `KEK_final` and attach it as a **hybrid wrap** entry.
+   5. Encrypt the file data using **AES-256-GCM**:
+      * Single DEK, random nonce (96-bit), per file.
+      * Optional random padding applied before final tag.
+   6. Write:
+      * Header with Argon2 params + hybrid wraps.
+      * Ciphertext.
+      * GCM tag.
+
+3. **Outputs**
+   * A single `.aesc` file containing:
+     * Compact JSON header.
+     * Ciphertext.
+     * Authentication tag.
+
+Sensitive values (`DEK`, `pass_KEK`, `kem_KEK`) are zeroized from memory where possible.
 
 ---
 
 ## 🔓 Decryption Flow
 
-1. **Inputs required**:
+1. **Inputs required**
+   * `.aesc` file.
+   * Correct **password**.
+   * Matching **FROG private key (`frog522pp.sk`)** available to the app.
 
-   * `.aesc` file
-   * Correct password
-   * **Your matching** `frog522pp.sk` (private key) present in the app folder (or uploaded).
+2. **Process**
+   1. Read header and parse:
+      * Magic/versions.
+      * Argon2 parameters (`t`, `m`, `p`, `salt`).
+      * Hybrid wraps.
+      * `wrap_order` and `alg_suite` are **strictly verified**:
+        * `wrap_order` must be `"kem_then_pass"`.
+        * `alg_suite` must be `"FROG-522PP|AES-256-GCM|Argon2id"`.
+   2. Re-derive **password KEK** via Argon2id.
+   3. For each hybrid wrap:
+      * Use your FROG private key to try to recover **kem-KEK**.
+      * Rebuild `KEK_final` and try to decrypt the DEK.
+      * Stop at the first successful unwrap.
+   4. Decrypt file content with AES-GCM using the unwrapped DEK.
+   5. Remove padding and write plaintext to the output file.
 
-2. **Internals**:
+3. **Outputs**
+   * The original file content (usually original name or `filename.dec` if needed).
+   * If no wrap matches:
+     * `"Hybrid unlock failed (password or FROG key mismatch)."`
 
-   * Reads header, recomputes pass-KEK via Argon2id using stored parameters.
-   * Tries each hybrid-wrap with your private key; once one unwraps the DEK, it decrypts the file.
-   * Removes random padding at the end.
-
-3. **Outputs**:
-
-   * The original filename if free; otherwise `filename.dec`.
-   * If the password or key doesn’t match **any** wrap, you get:
-     **“Hybrid unlock failed (password or FROG key mismatch).”**
-
-> **Anti-bruteforce:** The app limits attempts per file within a time window.
+An **AttemptTracker** limits repeated failures for the same file over a time window to slow brute force.
 
 ---
 
 ## 👁️ Paranoid Mode (recommended)
 
-* **ON by default**. Toggle with the checkbox or **F9**.
-* Disables **Browse**, encourages **Manual Path** (fewer shell MRU traces).
-* Produces **randomized output names** like `file_a1b2c3d4.aesc`.
-* Makes it easy to delete originals after successful encryption.
+Paranoid Mode is meant for users who care about minimizing traces:
+
+* **File dialog disabled** — you must paste paths manually.
+* **Randomized encrypted filenames** — harder to correlate by name alone.
+* Pairs naturally with:
+  * Unchecking **“Keep original after encrypt”**.
+  * Using strong, unique passwords per file.
+  * Storing private keys outside the working directory when not in use.
 
 ---
 
 ## 🧾 Key Files & Locations
 
-* **`frog522pp.pub`** — your public key (Base64 canonical). Share this.
-* **`frog522pp.sk`** — your private key. Never share this.
+* **`frog522pp.pub`** — public key
+  * Base64 canonical, single line.
+  * Safe to share.
+* **`frog522pp.sk`** — private key
+  * 66-byte binary.
+  * **Never** share this.
+  * Stored in the app directory while running.
+  * ACL-locked where supported (owner-only).
+  * Secure-wiped on exit (multi-pass overwrite + delete, best-effort).
 
-  * **Stored in the app directory.**
-  * Protected with **owner-only ACLs** (if `pywin32` installed) or `0600` permissions fallback.
-  * **Auto-wiped on exit** (multi-pass overwrite + delete best-effort).
-* Back up `frog522pp.sk` **elsewhere** securely. If you lose it, you **cannot** decrypt hybrid files.
+> 🔁 Make your own offline backup of `frog522pp.sk`.  
+> If you lose it, you will **not** be able to decrypt hybrid-encrypted files.
 
 ---
 
-## ⚙️ Advanced Options
+## ⚙️ Advanced Options & Environment Variables
 
-* **Adaptive chunk size**: 64 KiB → up to **4 MiB** based on file size and available RAM.
-* **Memory-mapped I/O** for huge files (≥ 1 GiB): set env var **`FROG_MMAP=1`**.
-
-  * Optional threshold override: **`FROG_MMAP_MIN_MB=1024`** (default 1024 = 1 GiB).
-* **Attempt limiting**: per-file rate limit to slow brute-force.
-* **Anti-debug** checks and Windows hardening (SetErrorMode, VirtualLock/Unlock, SecureZeroMemory).
+* **Adaptive chunk size**
+  * From ~64 KiB up to **4 MiB** depending on file size and available RAM.
+* **Optional memory-mapped I/O for huge files**
+  * Enable with:
+    ```bash
+    set FROG_MMAP=1
+    ```
+  * Optional thresholds:
+    ```bash
+    set FROG_MMAP_MIN_MB=1024   # default 1024 (1 GiB)
+    set FROG_MMAP_MAX_MB=4096   # default 4096 (4 GiB)
+    ```
+* **Optional strict anti-debug**
+  * By default the app will **not** kill itself if a debugger is attached.
+  * To enable strict anti-debug behavior:
+    ```bash
+    set FROGLOCK_STRICT_ANTIDEBUG=1
+    ```
+    With this set, detection of a debugger causes immediate exit.
+* **Attempt limiting**
+  * Per-file rate limit: too many failed decrypt attempts in a short window will trigger:
+    * `"Too many attempts. Wait a bit."`
 
 ---
 
 ## 🏗️ Build from Source (Windows)
 
-**Requirements:** Python 3.11+, `pip`
+**Requirements**
+
+* Python **3.12+** recommended.
+* Git and `pip`.
 
 ```bash
 git clone https://github.com/victormeloasm/froglock.git
 cd froglock
+
 pip install -r requirements.txt
-# Optional speedups
+# Optional speedups:
 pip install numpy gmpy2 pywin32
-python FROGLock_GHOST_v5_3.py
-```
 
-### Portable EXE (PyInstaller, **no UPX**)
+python FrogLock.py
+````
 
-One-liner (PowerShell/CMD):
+### Portable EXE (PyInstaller, no UPX)
+
+Example one-liner (PowerShell/CMD):
 
 ```bash
 pyinstaller --noconfirm --onefile --clean --noupx --noconsole ^
-  --name FROGLock_GHOST_v5_3 ^
-  --hidden-import argon2.low_level --hidden-import blake3 ^
-  --runtime-tmpdir "%TEMP%\frog_%USERNAME%" FROGLock_GHOST_v5_3.py
+  --name FrogLock ^
+  FrogLock.py
 ```
 
-Tips:
-
-* `--noupx` ensures **no UPX** is used.
-* You can `--exclude-module numpy --exclude-module gmpy2` if you want the smallest build.
+You can add `--exclude-module numpy --exclude-module gmpy2` to trim size if needed.
 
 ---
 
 ## 🧪 Security Model (short)
 
-* **Confidentiality & integrity**: AES-256-GCM with 96-bit nonce and 128-bit tag.
-* **Hybrid secrecy**: DEK unwrap requires both **password (Argon2id)** and **FROG private key**.
-* **Zero-trust**: No telemetry, no network, no background services.
-* **Memory hygiene**: VirtualLock/Unlock, SecureZeroMemory, buffer zeroization best-effort.
-* **Disk hygiene**: Temporary files created with owner-only ACL; private key secure-wiped on exit.
-* **Header**: JSON with minimal metadata, includes Argon2 parameters and hybrid wraps; no plaintext filenames or paths.
+* **Confidentiality & integrity**
+
+  * AES-256-GCM with 96-bit nonce and 128-bit tag.
+* **Hybrid secrecy**
+
+  * DEK can only be unwrapped with:
+
+    * Correct **password** (Argon2id, autotuned by time), **and**
+    * A valid **FROG private key** matching one of the recipients.
+* **No telemetry**
+
+  * No network calls, no phone-home, no analytics.
+* **Memory hygiene**
+
+  * Uses `VirtualLock`, `VirtualUnlock`, and `RtlSecureZeroMemory` where available.
+  * DEK and KEKs are stored in `bytearray`s and wiped after use.
+* **Disk hygiene**
+
+  * Key files and temporary outputs created with restrictive permissions.
+  * `frog522pp.sk` secure-wiped from the app folder on exit (best-effort).
+* **Header design**
+
+  * JSON-based, compact.
+  * Includes Argon2 parameters and hybrid wraps.
+  * Avoids leaking plaintext paths or user-identifying metadata.
 
 ---
 
 ## 🚑 Troubleshooting & Common Errors
 
 * **“Invalid path.”**
-  Path contains `..` or invalid segments. Paste a clean absolute path.
+  Path is malformed or contains disallowed segments (`..`). Paste a clean absolute path.
 
 * **“Hybrid is mandatory: add at least one FROG recipient.”**
-  You tried to encrypt without recipients. Open **Recipients…**, paste Base64 public key(s), **Save**.
+  You tried to encrypt without any valid FROG public keys in the Recipients list.
 
 * **“Missing FROG secret key (.sk).”**
-  For decryption, you must have your private key (`frog522pp.sk`) in the app folder (or upload it).
+  For decryption, the private key must be loaded (`frog522pp.sk` in the app folder or imported via **Upload FROG .sk…**).
 
 * **“Hybrid unlock failed (password or FROG key mismatch).”**
-  Either the password is wrong **or** your private key doesn’t match any wrap in the file header.
+  Either:
+
+  * The password is wrong, **or**
+  * The private key does not match any wrap in the file header.
 
 * **“Too many attempts. Wait a bit.”**
-  The anti-bruteforce window is active. Wait a few minutes.
+  The per-file rate limit has been reached. Wait a few minutes before trying again.
 
 * **SmartScreen / AV warning**
-  Verify you downloaded from the official repo, then **More info → Run anyway**.
+  Common with new unsigned EXEs. Confirm the hash/source, then use **More info → Run anyway**.
 
 * **“No valid FROG recipients. Check the public keys.”**
-  One or more pasted public keys were invalid (bad Base64 or not on curve). Paste canonical Base64 only.
+  One or more pasted public keys were invalid or malformed. Ensure they are canonical Base64 FROG pubkeys.
 
 ---
 
 ## 📈 Performance Notes
 
-* AES-GCM encryption runs at NVMe speeds; KEM wraps are parallelized.
-* `gmpy2` speeds up ECC; `numpy` accelerates buffer XOR ops.
-* Argon2id is **autotuned** for the host — expect 64–512 MiB memory use by default.
+* AES-GCM usually runs near disk speed on SSD/NVMe.
+* Multiple recipients are handled with **parallel KEM wraps**.
+* `gmpy2` (optional) speeds up ECC math; `numpy` (optional) speeds up large buffer XOR.
+* Argon2id parameters are **autotuned by time (~0.5s)** rather than using a fixed profile,
+  adapting to different hardware.
 
 ---
 
-## 🔄 Changelog (v5.3 — 2025-10-20)
+## 🔄 Changelog (v5.4 — Ghost Hardened)
 
-* **SecureEntry**: password handled as `bytearray`, zeroized; entry cleared on read.
-* **Parallel KEM** for multiple recipients (dynamic thread pool).
-* **Adaptive chunk size** (up to 4 MiB) and optional **mmap** for huge files.
-* **Windows hardening**: SetErrorMode, anti-debug checks, VirtualLock/Unlock, SecureZeroMemory.
-* **Owner-only ACL** for key/temp files (pywin32 if available).
-* **Clipboard wipe** on encrypt; **auto-clear password** after 5 minutes idle.
-* **UI**: Dark theme, tooltips, progress, virtual keyboard; **Paranoid Mode** refined.
-* **Anti-bruteforce** per file; safer path validation and atomic writes.
+**Key security changes compared to v5.3:**
+
+* **Unbiased FROG key generation**
+
+  * `frog_privkey_generate()` now uses rejection sampling to generate keys uniformly in `[1, n-1]`
+    instead of relying on `k % n`.
+
+* **Time-based Argon2id autotune**
+
+  * Argon2id calibration is now based on real execution time (target ~500 ms),
+    choosing `{t, m, p}` according to the machine’s capabilities.
+
+* **Stricter hybrid metadata**
+
+  * `pass_params_make()` explicitly sets:
+
+    * `wrap_order = "kem_then_pass"`
+    * `alg_suite = "FROG-522PP|AES-256-GCM|Argon2id"`
+
+* **Strict validation on decrypt**
+
+  * `decrypt_stream()` refuses headers whose `wrap_order` or `alg_suite` do not match the expected values.
+
+* **Improved key zeroization**
+
+  * Both the DEK **and** the password-derived KEK (`kek_pass`) are now explicitly locked and wiped after use.
+
+* **Configurable anti-debug**
+
+  * Anti-debug behavior is now controlled by the `FROGLOCK_STRICT_ANTIDEBUG` environment variable
+    instead of always killing the process when a debugger is detected.
+
+* **UI**
+
+  * Window size adjusted for a more compact look (no overly stretched layout).
+  * All existing GUI features preserved (Recipients manager, keypair generation, Paranoid Mode, etc.).
 
 ---
 
 ## ❓ FAQ
 
 **Q: Can I decrypt with just the password?**
-No. Hybrid is **mandatory**: password **and** your FROG private key must match.
+No. Hybrid is mandatory: you need **both** the correct password and a matching **FROG private key**.
 
 **Q: Where should I store my private key?**
-Keep `frog522pp.sk` in the app folder only while using the app, and store a **backup** in a secure location offline.
+Keep `frog522pp.sk` in the app folder only while using FrogLock and maintain a **separate encrypted backup** offline.
 
-**Q: What if I lose `.sk`?**
-You cannot recover hybrid-encrypted files. That’s by design.
+**Q: What happens if I lose my `.sk` file?**
+You will not be able to decrypt hybrid-encrypted files. There is no backdoor or recovery mechanism.
 
-**Q: Does it leave traces?**
-FROGLock avoids logs and registry writes; Paranoid Mode reduces shell traces by disabling Browse and favoring Manual Path. As always, OS and third-party tools may still leave indirect traces (recent files, AV caches, etc.).
+**Q: Does FROGLock remove all traces from the system?**
+It avoids logs, registry writes, and trims clipboard and temp usage, especially in Paranoid Mode.
+However, OS-level traces (recent files, AV caches, pagefile, etc.) are outside the app’s control.
 
 ---
 
 ## 📜 License & Disclaimer
 
-**MIT License** — see [LICENSE](LICENSE).
-This software is provided **“as is”** without warranty. Use responsibly. The authors are **not liable** for data loss, misuse, or outcome of cryptographic decisions.
+FROGLock is released under the **MIT License** — see [LICENSE](LICENSE).
+
+This software is provided **“as is”**, without warranty of any kind.
+Use it responsibly. You are solely responsible for backups, key management, and secure usage.
+
 
